@@ -3,6 +3,10 @@ import VCF from '@gmod/vcf'
 import './App.css'
 
 const files = [
+  'benchmark/HG002_SVs_Tier1_v0.6.bed',
+  'benchmark/HG002_SVs_Tier1_v0.6._hi_conf.bed',
+  'benchmark/HG002_SVs_Tier1_v0.6._hi_conf_short_read_only.bed',
+  'benchmark/HG002_SVs_Tier1_v0.6.vcf.gz',
   'calls/HG002.2X250.downsampled.50X.breakseq.vcf',
   'calls/HG002.2X250.downsampled.50X.cnvnator.svtyped.vcf',
   'calls/HG002.2X250.downsampled.50X.cnvnator.vcf',
@@ -62,7 +66,7 @@ function App() {
         </div>
       </fieldset>
 
-      <Table mode={mode} filename={value} />
+      <Table key={value} mode={mode} filename={value} />
     </>
   )
 }
@@ -84,21 +88,41 @@ function Table({ mode, filename }: { mode: string; filename: string }) {
           )
         }
         const data = await response.text()
-        const parser = new VCF({
-          header: data
+        if (filename.endsWith('.vcf') || filename.endsWith('.vcf.gz')) {
+          const parser = new VCF({
+            header: data
+              .split('\n')
+              .filter(f => f.startsWith('#'))
+              .join('\n'),
+          })
+          const lines = data
             .split('\n')
-            .filter(f => f.startsWith('#'))
-            .join('\n'),
-        })
-        const lines = data
-          .split('\n')
-          .filter(f => !f.startsWith('#'))
-          .filter(f => !!f)
-          .map(line => ({
-            parsed: parser.parseLine(line),
-            line: line.split('\t'),
-          }))
-        setData(lines)
+            .filter(f => !f.startsWith('#'))
+            .filter(f => !!f)
+            .map(line => ({
+              parsed: parser.parseLine(line),
+              line: line.split('\t'),
+            }))
+          setData(lines)
+        } else if (filename.endsWith('.bed')) {
+          const lines = data
+            .split('\n')
+            .filter(f => !f.startsWith('#'))
+            .filter(f => !!f)
+            .map(line => {
+              const ret = line.split('\t')
+              return {
+                parsed: {
+                  CHROM: ret[0],
+                  POS: +ret[1],
+                  ID: ret[3],
+                  INFO: { END: ret[2] },
+                },
+                line: line.split('\t'),
+              }
+            })
+          setData(lines)
+        }
       } catch (e) {
         setError(e)
         console.error(e)
@@ -119,7 +143,7 @@ function Table({ mode, filename }: { mode: string; filename: string }) {
   )
 }
 
-function RawVCF({ rows }: { rows?: any[] }) {
+function RawVCF({ rows }: { rows?: { line: string[]; parsed: any }[] }) {
   return (
     <table>
       <thead>
@@ -153,8 +177,9 @@ function RawVCF({ rows }: { rows?: any[] }) {
   )
 }
 
-function shorten(val: string) {
-  return val.length > 100 ? val.slice(0, 100) + '...' : val
+function shorten(v = '', len = 30) {
+  const val = `${v}`
+  return val.length > len ? val.slice(0, len) + '...' : val
 }
 
 function ParsedVCF({
@@ -171,55 +196,56 @@ function ParsedVCF({
   keys.delete('END')
 
   return (
-    <table>
-      <thead>
-        <tr>
-          <th>JB2 LINK</th>
-          <th>LENGTH</th>
-          <th>ID</th>
-          <th>REF</th>
-          <th>ALT</th>
-          <th>QUAL</th>
-          <th>FILTER</th>
-          {[...keys].map(k => (
-            <th key={k}>{k}</th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.slice(0, 100).map(({ parsed, line }) => {
-          const start = +line[1]
-          const end = +(parsed.INFO?.END?.[0] || 0)
-          const len = (end - start).toLocaleString('en-US')
-          const s = start.toLocaleString('en-US')
-          const e = start.toLocaleString('en-US')
-          return (
-            <tr key={line.join('\t')}>
-              <td>
-                <a
-                  href={`https://jbrowse.org/code/jb2/v2.6.3/?config=/demos/hg002_demo/config.json&assembly=hg19&loc=${line[0]}:${start}-${end}`}
-                  target="_blank"
-                >
-                  {`${line[0]}:${s}-${e}`}
-                </a>
-              </td>
-              <td>{len}</td>
-              {line.slice(2, 7).map(elt => (
-                <td key={elt}>{shorten(elt)}</td>
-              ))}
-              {[...keys].map(k => {
-                const val = parsed.INFO[k] || ''
-                return (
-                  <td key={k}>
-                    {val.length > 100 ? val.slice(0, 100) + '...' : val}
-                  </td>
-                )
-              })}
-            </tr>
-          )
-        })}
-      </tbody>
-    </table>
+    <>
+      <div>Rows:{rows.length}</div>
+      <table>
+        <thead>
+          <tr>
+            <th>JB2 LINK</th>
+            <th>LENGTH</th>
+            <th>ID</th>
+            <th>REF</th>
+            <th>ALT</th>
+            <th>QUAL</th>
+            <th>FILTER</th>
+            {[...keys].map(k => (
+              <th key={k}>{k}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, 100).map(({ parsed, line }) => {
+            const start = parsed.POS || 0
+            const end = +(parsed.END || parsed.INFO?.END?.[0] || 0)
+            const len = (end - start).toLocaleString('en-US')
+            const s = start.toLocaleString('en-US')
+            const e = start.toLocaleString('en-US')
+            return (
+              <tr key={line.join('\t')}>
+                <td>
+                  <a
+                    href={`https://jbrowse.org/code/jb2/v2.6.3/?config=/demos/hg002_demo/config.json&assembly=hg19&loc=${line[0]}:${start}-${end}`}
+                    target="_blank"
+                  >
+                    {`${line[0]}:${s}-${e}`}
+                  </a>
+                </td>
+                <td>{len}</td>
+                <td>{parsed.ID}</td>
+                <td>{shorten(parsed.REF)}</td>
+                <td>{shorten(parsed.ALT)}</td>
+                <td>{shorten(parsed.QUAL)}</td>
+                <td>{shorten(parsed.FILTER)}</td>
+                {[...keys].map((k, idx) => {
+                  const val = shorten(parsed.INFO[k] || '')
+                  return <td key={val + '-' + idx}>{val}</td>
+                })}
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </>
   )
 }
 
