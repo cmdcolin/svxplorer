@@ -1,8 +1,16 @@
-# sv_browser_hackathon
+# SVXplorer
 
-Creating a browser for parliament2 and other SV callers on the HG002 dataset,
-with links to JBrowse 2
+Creating a web-based tool to browse VCF SV calls, and link to genome browser for
+evidence
+
+![](img/1.png)
 
 ## Live demo
 
-https://cmdcolin.github.io/sv_browser_hackathon
+https://cmdcolin.github.io/svxplorer
+
+## Notes
+
+Currently we are hardcoded to use particular VCF files for HG002, but I think
+this repo could be a general purpose tool for SV quality control checking. If
+you are interested in using, make a github issue and let me know

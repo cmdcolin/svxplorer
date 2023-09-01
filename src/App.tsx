@@ -1,11 +1,9 @@
 import { useEffect, useState } from 'react'
+import { ungzip } from 'pako'
 import VCF from '@gmod/vcf'
 import './App.css'
 
 const files = [
-  'benchmark/HG002_SVs_Tier1_v0.6.bed',
-  'benchmark/HG002_SVs_Tier1_v0.6._hi_conf.bed',
-  'benchmark/HG002_SVs_Tier1_v0.6._hi_conf_short_read_only.bed',
   'benchmark/HG002_SVs_Tier1_v0.6.vcf.gz',
   'calls/HG002.2X250.downsampled.50X.breakseq.vcf',
   'calls/HG002.2X250.downsampled.50X.cnvnator.svtyped.vcf',
@@ -25,6 +23,7 @@ const files = [
 function App() {
   const [value, setValue] = useState(files[0])
   const [mode, setMode] = useState('parsed')
+  const [filter, setFilter] = useState('CHR:22')
   return (
     <>
       <h1>Team 7: Mapping vs assembly based SV calls</h1>
@@ -44,18 +43,6 @@ function App() {
         <div>
           <input
             type="radio"
-            id="raw"
-            name="mode"
-            value="raw"
-            checked={mode === 'raw'}
-            onChange={event => setMode(event.target.value)}
-          />
-          <label htmlFor="raw">Raw VCF</label>
-        </div>
-
-        <div>
-          <input
-            type="radio"
             id="parsed"
             name="mode"
             value="parsed"
@@ -64,16 +51,38 @@ function App() {
           />
           <label htmlFor="parsed">Parsed VCF</label>
         </div>
+        <label htmlFor="filter">
+          Filter (example, type CHR:22 for chromosome 22 variants, this demo is
+          currently best done looking at chr22):{' '}
+        </label>{' '}
+        <input
+          type="text"
+          id="filter"
+          value={filter}
+          onChange={event => setFilter(event.target.value)}
+        />
       </fieldset>
 
-      <Table key={value} mode={mode} filename={value} />
+      <Table key={value} filter={filter} mode={mode} filename={value} />
     </>
   )
 }
 
-function Table({ mode, filename }: { mode: string; filename: string }) {
+function isGzip(buf: Uint8Array) {
+  return buf[0] === 31 && buf[1] === 139 && buf[2] === 8
+}
+
+function Table({
+  mode,
+  filter,
+  filename,
+}: {
+  filter: string
+  mode: string
+  filename: string
+}) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [data, setData] = useState<any[]>()
+  const [rows, setRows] = useState<any[]>()
   const [error, setError] = useState<unknown>()
   useEffect(() => {
     // eslint-disable-next-line no-extra-semi
@@ -87,7 +96,13 @@ function Table({ mode, filename }: { mode: string; filename: string }) {
             } fetching ${filename} ${await response.text()}`,
           )
         }
-        const data = await response.text()
+        const buf = await response.arrayBuffer()
+        let view = new Uint8Array(buf)
+        if (isGzip(view)) {
+          view = ungzip(view)
+        }
+        const data = new TextDecoder('utf8', { fatal: true }).decode(view)
+
         if (filename.endsWith('.vcf') || filename.endsWith('.vcf.gz')) {
           const parser = new VCF({
             header: data
@@ -103,7 +118,7 @@ function Table({ mode, filename }: { mode: string; filename: string }) {
               parsed: parser.parseLine(line),
               line: line.split('\t'),
             }))
-          setData(lines)
+          setRows(lines)
         } else if (filename.endsWith('.bed')) {
           const lines = data
             .split('\n')
@@ -116,12 +131,15 @@ function Table({ mode, filename }: { mode: string; filename: string }) {
                   CHROM: ret[0],
                   POS: +ret[1],
                   ID: ret[3],
-                  INFO: { END: ret[2] },
+                  INFO: {
+                    END: [ret[2]],
+                    SVTYPE: ret[1] === ret[2] + 1 ? 'INS' : '',
+                  },
                 },
                 line: line.split('\t'),
               }
             })
-          setData(lines)
+          setRows(lines)
         }
       } catch (e) {
         setError(e)
@@ -129,15 +147,21 @@ function Table({ mode, filename }: { mode: string; filename: string }) {
       }
     })()
   }, [filename])
-  const rows = data
   return error ? (
     <div style={{ color: 'red' }}>{`${error}`}</div>
+  ) : !rows ? (
+    <h1>Loading...</h1>
   ) : (
     <>
       {mode === 'raw' ? (
         <RawVCF key={filename} rows={rows} />
       ) : (
-        <ParsedVCF key={filename} rows={rows} />
+        <ParsedVCF
+          filter={filter}
+          filename={filename}
+          key={filename}
+          rows={rows}
+        />
       )}
     </>
   )
@@ -184,7 +208,11 @@ function shorten(v = '', len = 30) {
 
 function ParsedVCF({
   rows = [],
+  filename,
+  filter,
 }: {
+  filename: string
+  filter: string
   rows?: { line: string[]; parsed: any }[]
 }) {
   const keys = new Set<string>()
@@ -197,8 +225,10 @@ function ParsedVCF({
 
   return (
     <>
-      <div>Rows:{rows.length}</div>
       <table>
+        <caption>
+          Displaying {filename}. Rows: {rows.length}
+        </caption>
         <thead>
           <tr>
             <th>JB2 LINK</th>
@@ -214,35 +244,48 @@ function ParsedVCF({
           </tr>
         </thead>
         <tbody>
-          {rows.slice(0, 100).map(({ parsed, line }) => {
-            const start = parsed.POS || 0
-            const end = +(parsed.END || parsed.INFO?.END?.[0] || 0)
-            const len = (end - start).toLocaleString('en-US')
-            const s = start.toLocaleString('en-US')
-            const e = start.toLocaleString('en-US')
-            return (
-              <tr key={line.join('\t')}>
-                <td>
-                  <a
-                    href={`https://jbrowse.org/code/jb2/v2.6.3/?config=/demos/hg002_demo/config.json&assembly=hg19&loc=${line[0]}:${start}-${end}`}
-                    target="_blank"
-                  >
-                    {`${line[0]}:${s}-${e}`}
-                  </a>
-                </td>
-                <td>{len}</td>
-                <td>{parsed.ID}</td>
-                <td>{shorten(parsed.REF)}</td>
-                <td>{shorten(parsed.ALT)}</td>
-                <td>{shorten(parsed.QUAL)}</td>
-                <td>{shorten(parsed.FILTER)}</td>
-                {[...keys].map((k, idx) => {
-                  const val = shorten(parsed.INFO[k] || '')
-                  return <td key={val + '-' + idx}>{val}</td>
-                })}
-              </tr>
-            )
-          })}
+          {rows
+            .filter(f => {
+              if (filter.startsWith('CHR:')) {
+                return f.parsed.CHROM == filter.slice(4)
+              } else {
+                return f.line.join('\t').includes(filter)
+              }
+            })
+            .slice(0, 1000)
+            .map(({ parsed, line }) => {
+              const CHROM = parsed.CHROM
+              const start = +parsed.POS || 0
+              const end = +parsed.INFO?.END?.[0]
+              const len = end - start
+              const l = len.toLocaleString('en-US')
+              const s = start.toLocaleString('en-US')
+              const e = end.toLocaleString('en-US')
+              const left = Math.floor(start - len / 3)
+              const right = Math.floor(end + len / 3)
+              return (
+                <tr key={line.join('\t')}>
+                  <td>
+                    <a
+                      href={`https://jbrowse.org/code/jb2/v2.6.3/?config=/demos/hg002_demo/config.json&assembly=hg19&loc=${line[0]}:${left}-${right}&tracks=2x250_hg19,chr22_MATERNAL_vs_hg19_cigar,chr22_PATERNAL_vs_hg19_cigar,HG002_SVs_Tier1_v0.6.vcf`}
+                      target="_blank"
+                    >
+                      {`${CHROM}:${s}-${e}`}
+                    </a>
+                  </td>
+                  <td>{l}</td>
+                  <td>{parsed.ID}</td>
+                  <td>{shorten(parsed.REF, 10)}</td>
+                  <td>{shorten(parsed.ALT, 10)}</td>
+                  <td>{shorten(parsed.QUAL)}</td>
+                  <td>{shorten(parsed.FILTER)}</td>
+                  {[...keys].map((k, idx) => {
+                    const val = shorten(parsed.INFO[k] || '')
+                    return <td key={val + '-' + idx}>{val}</td>
+                  })}
+                </tr>
+              )
+            })}
         </tbody>
       </table>
     </>
